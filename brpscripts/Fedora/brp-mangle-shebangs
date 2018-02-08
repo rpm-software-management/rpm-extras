@@ -23,7 +23,7 @@ for f in $(find -executable -type f | xargs --no-run-if-empty file -N --mime-typ
     chmod -x "$f"
     touch -d "$ts" "$f"
     continue
-  elif [ "${shebang%${shebang#?}}" != "/" ]; then
+  elif [ -n "${shebang##/*}" ]; then
     echo >&2 "*** ERROR: $f has shebang which doesn't start with '/' ($shebang)"
     fail=1
     continue
