@@ -5,6 +5,9 @@ if [ -z "$RPM_BUILD_ROOT" -o "$RPM_BUILD_ROOT" = "/" ]; then
   exit 0
 fi
 
+exclude_files="${1:-}"
+exclude_shebangs="${2:-}"
+
 cd "$RPM_BUILD_ROOT"
 
 trim() {
@@ -14,10 +17,21 @@ trim() {
 fail=0
 for f in $(find -executable -type f | xargs --no-run-if-empty file -N --mime-type | grep -Po "^\K.+(?=: text/)"); do
 
+  # Remove the dot
+  path="${f#.}"
+
+  if [ -n "$exclude_files" ]; then
+    echo "$path" | grep -q -E "$exclude_files" && continue
+  fi
+
   ts=$(stat -c %y "$f")
 
   read orig_shebang < "$f" || :
   shebang=$(trim $(echo "$orig_shebang" | grep -Po "#!\K.*" || echo))
+  if [ -n "$exclude_shebangs" ]; then
+    echo "$shebang" | grep -q -E "$exclude_shebangs" && continue
+  fi
+
   if [ -z "$shebang" ]; then
     echo >&2 "*** WARNING: $f is executable but has empty or no shebang, removing executable bit"
     chmod -x "$f"
@@ -44,10 +58,10 @@ for f in $(find -executable -type f | xargs --no-run-if-empty file -N --mime-typ
 
   if [ "$shebang" != "$py_shebang" ]; then
     sed -i -e "1c #!$py_shebang" "$f"
-    echo >&2 "*** WARNING: mangling shebang in $f from $orig_shebang to #!$py_shebang. This will become an ERROR, fix it manually!"
+    echo >&2 "*** WARNING: mangling shebang in $path from $orig_shebang to #!$py_shebang. This will become an ERROR, fix it manually!"
   elif [ "#!$shebang" != "$orig_shebang" ]; then
     sed -i -e "1c #!$shebang" "$f"
-    echo "mangling shebang in $f from $orig_shebang to #!$shebang"
+    echo "mangling shebang in $path from $orig_shebang to #!$shebang"
   fi
 
   touch -d "$ts" "$f"
