@@ -1,4 +1,4 @@
-#!/bin/sh -eu
+#!/bin/bash -eu
 
 # If using normal root, avoid changing anything.
 if [ -z "$RPM_BUILD_ROOT" -o "$RPM_BUILD_ROOT" = "/" ]; then
@@ -15,7 +15,8 @@ trim() {
 }
 
 fail=0
-for f in $(find -executable -type f | xargs --no-run-if-empty file -N --mime-type | grep -Po "^\K.+(?=: text/)"); do
+while IFS= read -r -d $'\0' f; do
+  file -N --mime-type "$f" | grep -q -P ".+(?=: text/)" || continue
 
   # Remove the dot
   path="${f#.}"
@@ -65,6 +66,6 @@ for f in $(find -executable -type f | xargs --no-run-if-empty file -N --mime-typ
   fi
 
   touch -d "$ts" "$f"
-done
+done < <(find -executable -type f -print0)
 
 exit $fail
