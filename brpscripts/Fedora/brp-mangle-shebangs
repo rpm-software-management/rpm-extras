@@ -27,8 +27,9 @@ while IFS= read -r -d $'\0' f; do
 
   ts=$(stat -c %y "$f")
 
-  read orig_shebang < "$f" || :
-  shebang=$(trim $(echo "$orig_shebang" | grep -Po "#!\K.*" || echo))
+  read shebang_line < "$f" || :
+  orig_shebang=$(trim $(echo "$shebang_line" | grep -Po "#!\K.*" || echo))
+  shebang="$orig_shebang"
   if [ -n "$exclude_shebangs" ]; then
     echo "$shebang" | grep -q -E "$exclude_shebangs" && continue
   fi
@@ -59,8 +60,8 @@ while IFS= read -r -d $'\0' f; do
 
   if [ "$shebang" != "$py_shebang" ]; then
     sed -i -e "1c #!$py_shebang" "$f"
-    echo >&2 "*** WARNING: mangling shebang in $path from $orig_shebang to #!$py_shebang. This will become an ERROR, fix it manually!"
-  elif [ "#!$shebang" != "$orig_shebang" ]; then
+    echo >&2 "*** WARNING: mangling shebang in $path from #!$orig_shebang to #!$py_shebang. This will become an ERROR, fix it manually!"
+  elif [ "#!$shebang" != "#!$orig_shebang" ]; then
     sed -i -e "1c #!$shebang" "$f"
     echo "mangling shebang in $path from $orig_shebang to #!$shebang"
   fi
