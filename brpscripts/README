@@ -1,0 +1,6 @@
+This directory contains Build Root Policy scripts. They are supposed to be
+executed during (almost) all builds. They typically generate files, clean up
+unwanted artifacts or check for unwanted content.
+
+The scripts need to be executable. To use them they need to be added to the
+macros used to create the build scripts of the required section.
