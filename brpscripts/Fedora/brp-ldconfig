@@ -1,0 +1,10 @@
+#!/bin/sh -efu
+# Force creating of DSO symlinks.
+
+# If using normal root, avoid changing anything.
+if [ -z "$RPM_BUILD_ROOT" -o "$RPM_BUILD_ROOT" = "/" ]; then
+  exit 0
+fi
+
+/sbin/ldconfig -N -r "$RPM_BUILD_ROOT"
+# TODO: warn if it created new symlinks and guide people.
