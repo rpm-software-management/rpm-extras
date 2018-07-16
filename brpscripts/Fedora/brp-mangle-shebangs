@@ -121,6 +121,10 @@ while IFS= read -r -d $'\0' f; do
   # /whatsoever/env foo → /whatsoever/foo
   shebang=$(echo "$shebang" | sed -r -e 's@^(.+/)env (.+)$@\1\2@')
 
+  # If the shebang now starts with /bin, change it to /usr/bin
+  # https://bugzilla.redhat.com/show_bug.cgi?id=1581757
+  shebang=$(echo "$shebang" | sed -r -e 's@^/bin/@/usr/bin/@')
+
   # Replace ambiguous python with python2
   py_shebang=$(echo "$shebang" | sed -r -e 's@/usr/bin/python(\s|$)@/usr/bin/python2\1@')
 
