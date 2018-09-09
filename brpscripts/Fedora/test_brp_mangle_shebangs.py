@@ -45,12 +45,13 @@ MANGLE_PAIRS_OK = {
     '/bin/rm': '/usr/bin/rm',
 }
 
-MANGLE_PAIRS_WARN = {
-    '/usr/bin/env python': '/usr/bin/python2',
-    '/usr/bin/python': '/usr/bin/python2',
-    '/bin/python': '/usr/bin/python2',
-    '/bin/env python': '/usr/bin/python2',
-}
+MANGLE_PYTHON_ERRORS = (
+    '/usr/bin/env python',
+    '/usr/bin/python',
+    '/usr/bin/python -tt',
+    '/bin/python',
+    '/bin/env python',
+)
 
 
 @pytest.fixture(autouse=True)
@@ -76,11 +77,12 @@ def create(shebang, *, space=None, name='script'):
     return script
 
 
-def mangle(*args):
+def mangle(*args, should_fail=False):
     result = subprocess.run(['./brp-mangle-shebangs', *args],
                             text=True, capture_output=True)
     print('OUT:', result.stdout)
     print('ERR:', result.stderr)
+    assert (result.returncode != 0) == should_fail
     return result
 
 
@@ -117,19 +119,16 @@ def test_shebangs_are_mangled(shebang):
     assert line == f'#!{expected}'
 
 
-@parametrize('shebang', MANGLE_PAIRS_WARN)
-def test_python_shebangs_are_mangled_warned(shebang):
-    expected = MANGLE_PAIRS_WARN[shebang]
-    script = create(shebang)
-    result = mangle()
+@parametrize('shebang', MANGLE_PYTHON_ERRORS)
+def test_ambiguous_python_shebangs_error(shebang):
+    create(shebang)
+    result = mangle(should_fail=True)
 
     assert not result.stdout
     err = result.stderr.strip()
-    assert err == (f'*** WARNING: mangling shebang in /script from '
-                   f'#!{shebang} to #!{expected}. This will become '
-                   f'an ERROR, fix it manually!')
-    line = script.read_text().splitlines()[0].strip()
-    assert line == f'#!{expected}'
+    assert err == (f'*** ERROR: ambiguous python shebang in /script: '
+                   f'#!{shebang}. '
+                   f'Change it to python3 (or python2) explicitly.')
 
 
 def test_multiple_files_can_be_mangled():
@@ -238,7 +237,6 @@ def test_empty_no_shebang_removes_executable_bit(has_shebang):
 
 def test_relative_shebang_errors():
     create('relative/path')
-    result = mangle()
+    result = mangle(should_fail=True)
     assert 'ERROR' in result.stderr
     assert "script has shebang which doesn't start with '/'" in result.stderr
-    assert result.returncode > 0

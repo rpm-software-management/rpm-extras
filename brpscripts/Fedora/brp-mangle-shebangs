@@ -129,8 +129,8 @@ while IFS= read -r -d $'\0' f; do
   py_shebang=$(echo "$shebang" | sed -r -e 's@/usr/bin/python(\s|$)@/usr/bin/python2\1@')
 
   if [ "$shebang" != "$py_shebang" ]; then
-    sed -i -e "1c #!$py_shebang" "$f"
-    echo >&2 "*** WARNING: mangling shebang in $path from #!$orig_shebang to #!$py_shebang. This will become an ERROR, fix it manually!"
+    echo >&2 "*** ERROR: ambiguous python shebang in $path: #!$orig_shebang. Change it to python3 (or python2) explicitly."
+    fail=1
   elif [ "#!$shebang" != "#!$orig_shebang" ]; then
     sed -i -e "1c #!$shebang" "$f"
     echo "mangling shebang in $path from $orig_shebang to #!$shebang"
