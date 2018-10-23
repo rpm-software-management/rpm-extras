@@ -1,0 +1,58 @@
+#!/bin/sh -e
+#
+# is_elf_so_executable - checks whether the given ELF shared object
+# should be treated as an executable.
+#
+# Not an every shared object is a library.
+# For example, PIEs should be treated as executables.
+#
+# Copyright (C) 2003-2016  Dmitry V. Levin <ldv@altlinux.org>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+[ $# -eq 1 ]
+file="$1"; shift
+
+# This dynamic linker used to have its entry point
+# equal to the text segment start address.
+[ -n "${file##*/lib64/ld-*.so}" ] || exit 0
+
+section_header="$(readelf --wide --sections "$file" ||:)"
+# An .interp section means it is an executable, see
+# comm -12 <(grep -Fl .interp /usr/lib/ldscripts/*)
+#          <(grep -Fle --shared /usr/lib/ldscripts/*)
+if printf %s "$section_header" |grep -Fqs ' .interp '; then
+	exit 0
+fi
+
+file_header="$(readelf --wide --file-header "$file" ||:)"
+# Zero entry point is treated like no entry points.
+entry="$(printf %s "$file_header" |
+	sed -ne 's/^ \+Entry point address: \+0x0*\([1-9a-f][0-9a-f]*\)$/\1/p')"
+
+# Zero text segment start address is treated like no text segments.
+text="$(printf %s "$section_header" |
+	sed -ne 's/^ *\[ *[0-9]\+\] \.text \+PROGBITS \+0*\([1-9a-f][0-9a-f]*\) \+.*/\1/p')"
+
+# Missing entry point or text segment means it is not an executable.
+# Also, if entry point and text segment start address are equal,
+# it is not an executable.
+[ -z "$entry" ] ||
+[ -z "$text" ] ||
+[ "$entry" = "$text" ] ||
+exit 0
+
+exit 1

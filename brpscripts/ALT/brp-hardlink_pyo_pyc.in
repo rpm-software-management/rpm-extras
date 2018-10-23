@@ -1,0 +1,18 @@
+#!/bin/sh -e
+#
+# brp-hardlink_pyo_pyc - hardlink identical .pyc and .pyo files.
+#
+
+. @RPMCONFIGDIR@/functions
+ValidateBuildRoot
+
+cd "$RPM_BUILD_ROOT"
+
+echo "Hardlinking identical .pyc and .pyo files"
+find -type f -name '*.pyc' |
+while read -r pyc; do
+	pyo=${pyc%c}o
+	if cmp -s "$pyc" "$pyo"; then
+		ln -f -v "$pyc" "$pyo"
+	fi
+done

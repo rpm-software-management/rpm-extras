@@ -1,0 +1,153 @@
+#!/bin/sh
+#
+# brp-compress - compress info and manpages.
+#
+# Copyright (C) 2000-2003  Dmitry V. Levin <ldv@altlinux.org>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+. @RPMCONFIGDIR@/functions
+ValidateBuildRoot
+
+cd "$RPM_BUILD_ROOT" || exit
+
+RPM_COMPRESS_METHOD="${RPM_COMPRESS_METHOD## }"
+RPM_COMPRESS_METHOD="${RPM_COMPRESS_METHOD%% }"
+echo "Compressing files in $RPM_BUILD_ROOT ($RPM_COMPRESS_METHOD)"
+
+case "$RPM_COMPRESS_METHOD" in
+	false|no|none|off|skip)
+		exit 0
+		;;
+esac
+
+: ${RPM_COMPRESS_TOPDIR:=}
+[ -d "$RPM_BUILD_ROOT$RPM_COMPRESS_TOPDIR" ] || exit 0
+
+StripSuffix()
+{
+	for s in gz bz2 Z; do
+		f="${1%.$s}"
+		if [ "$f" != "$1" ]; then
+			printf %s "$f"
+			return
+		fi
+	done
+	printf %s "$1"
+}
+
+for d in "$RPM_BUILD_ROOT/usr/share/info"; do
+	[ -z "${d##$RPM_BUILD_ROOT$RPM_COMPRESS_TOPDIR/*}" -a -d "$d" ] ||
+		continue
+	set -f
+	if [ -n "$RPM_COMPRESS_SKIPLIST" ]; then
+		for skip in $RPM_COMPRESS_SKIPLIST; do
+			if [ -z "${d##$skip}" ]; then
+				continue 2
+			fi
+		done
+	fi
+	set +f
+	find "$d" -type f \( -name \*.gz -o -name \*.Z \) -print0 |xargs -r0 gunzip
+	find "$d" -type f -name \*.bz2 -print0 |xargs -r0 bunzip2
+	find "$d" -type f -a \! -name dir -print0 |xargs -r0 @RPMCONFIGDIR@/compress_files
+done
+
+for d in `find "$RPM_BUILD_ROOT$RPM_COMPRESS_TOPDIR" -type d -name man`; do
+	set -f
+	if [ -n "$RPM_COMPRESS_SKIPLIST" ]; then
+		for skip in $RPM_COMPRESS_SKIPLIST; do
+			if [ -z "${d##$skip}" ]; then
+				continue 2
+			fi
+		done
+	fi
+	set +f
+	find "$d" -type f -size 0 -print0 |xargs -r0 rm -fv
+	find "$d" -type f -print0 |xargs -r0 chmod -c a-x
+	# Uncompress everything.
+	find "$d" -type f \( -name \*.gz -o -name \*.Z \) -print0 |xargs -r0 gunzip
+	find "$d" -type f -name \*.bz2 -print0 |xargs -r0 bunzip2
+	# First, compress normal files.
+	for f in `find "$d" -type f -a \! -name whatis -print0 |xargs -r0 file |grep ':[^:]*troff or preprocessor input text' |sed -e 's/:[^:]*troff or preprocessor input text.*//g'`; do
+		[ -f "$f" ] || continue
+		if ! head -1 "$f" |grep -q '^.so '; then
+			@RPMCONFIGDIR@/compress_files "$f"
+		fi
+	done
+	# Second, convert .so links into symlinks.
+	for f in `find "$d" -type f -a \! -name whatis -print0 |xargs -r0 file |grep ':[^:]*troff or preprocessor input text' |sed -e 's/:[^:]*troff or preprocessor input text.*//g'`; do
+		[ -f "$f" ] || continue
+		if head -1 "$f" |grep -q '^.so '; then
+			f_dir="${f%/*}"
+			f_dir_name="${f_dir##*/}"
+			TARGET_orig="$(head -1 "$f" |sed -e 's/^.so\([[:space:]]\)\+//')"
+			TARGET="$TARGET_orig"
+			TARGET_base="${TARGET##*/}"
+			TARGET_dir="$(dirname "$TARGET")"
+			if [ "." = "$TARGET_dir" -o "$f_dir_name" = "$TARGET_dir" ]; then
+				TO="$(basename "$f_dir/$TARGET_base"*)"
+			else
+				if [ -z "${TARGET##/*}" ]; then
+					# TARGET starts with /
+					TARGET_root="/$(relative "$TARGET" "$RPM_BUILD_ROOT/")"
+					if [ -z "${TARGET_root##/../*}" ]; then
+						TARGET_root="$TARGET"
+					fi
+					f_root="/$(relative "$f" "$RPM_BUILD_ROOT/")"
+					TARGET="$(relative "$TARGET_root" "$f_root")"
+					TO="$(cd $f_dir; printf %s\\n "$TARGET"*)"
+				else
+					TO="../$TARGET_dir/$(basename "$f_dir/../$TARGET"*)"
+				fi
+			fi
+			if [ ! -e "$f_dir/$TO" ]; then
+				# link to nothing
+				Fatal "file $f points to non-existent file $TARGET_orig"
+			fi
+			FROM="$f${TO##*$TARGET_base}"
+			rm -fv "$f"
+			ln -sv "$TO" "$FROM"
+		fi
+	done
+	# Third, correct symlinks.
+	for f in `find "$d" -type l`; do
+		f_orig="$f"
+		TARGET_orig="$(StripSuffix "$(/bin/ls -l "$f" |awk '{print $11}')")"
+		f="$(StripSuffix "$f")"
+		if [ -z "${TARGET_orig##/*}" ]; then
+			# TARGET_orig starts with /
+			TARGET_root="/$(relative "$TARGET_orig" "$RPM_BUILD_ROOT/")"
+			if [ -z "${TARGET_root##/../*}" ]; then
+				TARGET_root="$TARGET_orig"
+			fi
+		else
+			TARGET_root="$TARGET_orig"
+		fi
+		f_root="/$(relative "$f" "$RPM_BUILD_ROOT/")"
+		TARGET="$(relative "$TARGET_root" "$f_root")"
+		DIR="$(dirname "$f")"
+		TO="$(relative "$(printf %s\\n "$DIR/$TARGET"*)" "$f")"
+		if [ ! -e "$DIR/$TO" ]; then
+			# Found link to nothing.
+			Fatal "file $f points to non-existent file $TARGET_orig"
+		fi
+		FROM="$f${TO#$TARGET}"
+		rm -fv "$f_orig"
+		ln -sv "$TO" "$FROM"
+	done
+done
+:

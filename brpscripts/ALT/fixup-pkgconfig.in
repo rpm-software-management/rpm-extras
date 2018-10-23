@@ -1,0 +1,130 @@
+#!/bin/sh -ef
+#
+# fixup-pkgconfig - /usr/lib/pkgconfig/*.pc fixups.
+#
+# Copyright (C) 2002,2003,2004,2006,2008  Dmitry V. Levin <ldv@altlinux.org>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+. @RPMCONFIGDIR@/functions
+ValidateBuildRoot
+
+. @RPMCONFIGDIR@/tmpdir.sh
+TMPFILE=$tmpdir/tmp
+
+: ${RPM_FIXUP_SKIPLIST:=}
+
+fix()
+{
+	# fetch parameters
+
+	local includedir=
+	local libdir=
+	sed -ne "s/^\(\([a-z_]*\)\(prefix\|dir\|path\)\)[[:space:]]*=[[:space:]]*\(.*\)\$/local \1=\4/pg" "$f" >"$TMPFILE" || return 1
+
+	# source parameters
+
+	[ ! -s "$TMPFILE" ] || . "$TMPFILE" || return 1
+
+	local saved_val=
+	local old_val=
+	local new_val=
+
+	includedir="$(printf %s "$includedir" |tr -s /)"
+	libdir="$(printf %s "$libdir" |tr -s /)"
+
+	# fix cflags
+
+	old_val=`sed -ne "s/^Cflags: \([^']*\)\$/\1/pg" "$f"` || return 1
+	new_val="$(printf %s "$old_val" |tr -s /)"
+
+	saved_val=
+	while [ "$new_val" != "$saved_val" ]; do
+		saved_val="$new_val"
+		new_val=`printf %s "$new_val" |sed -e 's,\(^\| \+\)-I/usr\(/local\)\?/include\($\| \+\),\1\3,g'` || return 1
+	done
+
+	if [ "$includedir" = /usr/include ]; then
+		saved_val=
+		while [ "$new_val" != "$saved_val" ]; do
+			saved_val="$new_val"
+			new_val=`printf %s "$new_val" |sed -e 's,\(^\| \+\)-I\${includedir}\($\| \+\),\1\2,g'` || return 1
+		done
+	fi
+
+	new_val="$(printf %s "$new_val" |tr -s ' ')"
+	new_val="${new_val## }"
+	new_val="${new_val%% }"
+
+	if [ "$new_val" != "$old_val" ]; then
+		subst -p "s/^Cflags: .*/Cflags: $(quote_sed_regexp "$new_val")/g" -- "$f" || return 1
+		echo "$fname: Cflags: '$old_val' --> '$new_val'"
+	fi
+
+	# fix libs
+
+	old_val=`sed -ne "s/^Libs: \([^']*\)\$/\1/pg" "$f"` || return 1
+	new_val="$(printf %s "$old_val" |tr -s /)"
+
+	saved_val=
+	while [ "$new_val" != "$saved_val" ]; do
+		saved_val="$new_val"
+		new_val=`printf %s "$new_val" |sed -e 's#\(^\| \+\)\(-L\|-Wl,-rpath,\)/usr\(/local\)\?/'"$RPM_LIB"'\($\| \+\)#\1\4#g'` &&
+		new_val=`printf %s "$new_val" |sed -e 's#\(^\| \+\)\(-L\|-Wl,-rpath,\)\('$RPM_BUILD_ROOT'\|'$RPM_BUILD_DIR'\|/usr/lib[^/]*/gcc-lib\)[^ ]*\($\| \+\)#\1\4#g'` ||
+		return 1
+	done
+
+	if [ "$libdir" = "$RPM_LIBDIR" ]; then
+		saved_val=
+		while [ "$new_val" != "$saved_val" ]; do
+			saved_val="$new_val"
+			new_val=`printf %s "$new_val" |sed -e 's#\(^\| \+\)\(-L\|-Wl,-rpath,\)\${libdir}\($\| \+\)#\1\3#g'` || return 1
+		done
+	fi
+
+	new_val="$(printf %s "$new_val" |tr -s ' ')"
+	new_val="${new_val## }"
+	new_val="${new_val%% }"
+
+	if [ "$new_val" != "$old_val" ]; then
+		subst -p "s/^Libs: .*/Libs: $(quote_sed_regexp "$new_val")/g" -- "$f" || return 1
+		echo "$fname: Libs: '$old_val' --> '$new_val'"
+	fi
+}
+
+rc=0
+for f in "$@"; do
+	if [ ! -f "$f" ]; then
+		Info "$f: file unavailable"
+		rc=1
+		continue
+	fi
+
+	fname="${f#$RPM_BUILD_ROOT}"
+	fname="${fname#.}"
+
+	if [ -n "$RPM_FIXUP_SKIPLIST" ]; then
+		for skip in $RPM_FIXUP_SKIPLIST; do
+			if [ -z "${fname##$skip}" ]; then
+				continue 2
+			fi
+		done
+	fi
+
+	fix
+done
+
+exit $rc

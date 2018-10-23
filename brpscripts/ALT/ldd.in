@@ -1,0 +1,140 @@
+#! /bin/sh
+# Copyright (C) 1996-2004, 2005 Free Software Foundation, Inc.
+# Copyright (C) 2006-2018  Dmitry V. Levin <ldv@altlinux.org>
+#
+# This file is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA.
+
+. @RPMCONFIGDIR@/functions
+
+warn=
+bind_now=
+debug=
+
+while test $# -gt 0; do
+  case "$1" in
+  --undefined)
+    warn=1
+    bind_now=1
+    shift
+    ;;
+  --bindings)
+    warn=1
+    bind_now=1
+    debug=bindings
+    shift
+    ;;
+  --)		# Stop option processing.
+    shift; break
+    ;;
+  -*)
+    Fatal "unrecognized option: $1"
+    ;;
+  *)
+    break
+    ;;
+  esac
+done
+
+case $# in
+	[01]) Fatal 'insufficient arguments' ;;
+	2) ;;
+	*) Fatal 'too many arguments' ;;
+esac
+
+file="$1" && shift
+rpath="$1" && shift
+
+interp=
+get_interp_from_elf()
+{
+	local f info
+	f="$1"; shift
+
+	info="$(readelf --wide --segments "$f")" ||
+		Fatal "$f: unable to fetch ELF segment headers"
+
+	interp="$(printf '%s\n' "$info" |
+		  sed -ne 's,^[[:space:]]*\[Requesting program interpreter: \(/[^]]\+\)\]$,\1,p')"
+
+	[ -n "$interp" ]
+}
+
+rtld=
+get_rtld_from_interp()
+{
+	if [ -n "${RPM_BUILD_ROOT-}" ] &&
+	   [ -f "$RPM_BUILD_ROOT$interp" -a -x "$RPM_BUILD_ROOT$interp" ]; then
+		rtld="$RPM_BUILD_ROOT$interp"
+	elif [ -f "$interp" -a -x "$interp" ]; then
+		rtld="$interp"
+	else
+		rtld=
+	fi
+
+	[ -n "$rtld" ]
+}
+
+verify_out=
+rtld_verify_elf()
+{
+	local f
+	f="$1"; shift
+
+	verify_out="$("$rtld" --verify "$f")"
+	[ "$?" = 0 -o "$?" = 2 ]
+}
+
+trace_elf()
+{
+	local f
+	f="$1"; shift
+
+	LD_TRACE_LOADED_OBJECTS=1 \
+	LD_WARN=$warn \
+	LD_BIND_NOW=$bind_now \
+	LD_DEBUG=$debug \
+	LD_LIBRARY_VERSION=$verify_out \
+	LD_PRELOAD="$RPM_LD_PRELOAD" \
+		"$rtld" --library-path "$rpath" "$f" ||
+		Fatal "$f: trace failed"
+
+	exit 0
+}
+
+if get_interp_from_elf "$file"; then
+	get_rtld_from_interp ||
+		Fatal "$file: program interpreter $interp not found"
+	rtld_verify_elf "$file" &&
+	trace_elf "$file"
+fi
+
+for interp in $(cat /usr/bin/ldd 2>/dev/null |
+		sed -n 's/^RTLDLIST="\([^"]\+\)"/\1/p'); do
+	get_rtld_from_interp &&
+	rtld_verify_elf "$file" &&
+		trace_elf "$file"
+done
+
+dump_ld_config='@RPMCONFIGDIR@/dump_ld_config'
+get_interp_from_elf "$dump_ld_config" ||
+	Fatal "$dump_ld_config: program interpreter not specified"
+
+get_rtld_from_interp ||
+	Fatal "$dump_ld_config: program interpreter $interp not found"
+
+rtld_verify_elf "$file" &&
+	trace_elf "$file"
+
+Fatal "$file: failed to find the program interpreter"

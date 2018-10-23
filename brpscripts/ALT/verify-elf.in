@@ -1,0 +1,387 @@
+#!/bin/sh -ef
+#
+# verify-elf - verify ELF objects.
+#
+# Copyright (C) 2002-2017  Dmitry V. Levin <ldv@altlinux.org>
+# Copyright (C) 2009  Alexey Tourbin <at@altlinux.org>
+# Copyright (C) 2016       Ivan Zakharyaschev <imz@altlinux.org>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+set -o pipefail
+
+. @RPMCONFIGDIR@/functions
+ValidateBuildRoot
+
+elf_ldd='@RPMCONFIGDIR@/ldd'
+
+lookup_path()
+{
+	local d dir path found=
+	dir="$1" && shift
+	path="$1" && shift
+	for d in $(printf %s "$path" |tr : ' '); do
+		[ "$d" = "$dir" ] || continue
+		found="$d"
+		break
+	done
+	[ -n "$found" ] && return 0 || return 1
+}
+
+rc=0
+
+get_verify_policy()
+{
+	local name value
+	name="VERIFY_ELF_$1" && shift
+	eval "value=\"\$$name\""
+	[ -n "$value" ] || value=normal
+	printf %s "$value"
+}
+
+for m in ARCH FHS LFS LINT RPATH STACK TEXTREL UNRESOLVED; do
+	[ "${VERIFY_ELF_ANY-}" != strict ] || break
+	case "$(get_verify_policy "$m")" in
+		strict) VERIFY_ELF_ANY=strict ;;
+		normal|'') VERIFY_ELF_ANY=normal ;;
+		relaxed) [ "${VERIFY_ELF_ANY-}" = normal ] || VERIFY_ELF_ANY=relaxed ;;
+		*) [ -n "${VERIFY_ELF_ANY-}" ] || VERIFY_ELF_ANY=no ;;
+	esac
+done
+
+error_strict()
+{
+	local method filename prefix
+	method="$1"; shift
+	filename="$1"; shift
+	case "$(get_verify_policy "$method")" in
+		strict) prefix=ERROR; rc=1 ;;
+		*) prefix=WARNING ;;
+	esac
+	Info "$prefix: $filename: $*"
+}
+
+error_normal()
+{
+	local method filename prefix
+	method="$1"; shift
+	filename="$1"; shift
+	case "$(get_verify_policy "$method")" in
+		strict|normal) prefix=ERROR; rc=1 ;;
+		*) prefix=WARNING ;;
+	esac
+	Info "$prefix: $filename: $*"
+}
+
+error_relaxed()
+{
+	local method filename prefix
+	method="$1"; shift
+	filename="$1"; shift
+	case "$(get_verify_policy "$method")" in
+		strict|normal|relaxed) prefix=ERROR; rc=1 ;;
+		*) prefix=WARNING ;;
+	esac
+	Info "$prefix: $filename: $*"
+}
+
+verify_rpath()
+{
+	local f rpath
+	f="$1"; shift
+	rpath="$1"; shift
+
+	[ -n "$rpath" ] || return 0
+
+	local found=
+	if [ -z "${rpath##:*}" ]; then
+		error_relaxed RPATH "$f" "RPATH starts with \":\": $rpath"
+		found=1
+	elif [ -z "${rpath%%*:}" ]; then
+		error_relaxed RPATH "$f" "RPATH ends with \":\": $rpath"
+		found=1
+	elif [ -z "${rpath##*::*}" ]; then
+		error_relaxed RPATH "$f" "RPATH contains \"::\": $rpath"
+		found=1
+	elif [ -z "${rpath##*:*}" ]; then
+		error_strict RPATH "$f" "RPATH contains several entries: $rpath"
+		found=1
+	fi
+
+	if [ $(printf "%s" "$rpath" | LC_ALL=C tr -d '[ -~]' | wc -c) != 0 ]; then
+		error_relaxed RPATH "$f" "RPATH contains a non-ascii entry: $rpath"
+		found=1
+	else
+		for p in $(printf "%s" "$rpath" | tr : ' '); do
+			if [ -z "${p#\$ORIGIN}" -o -z "${p##\$ORIGIN/*}" -o \
+			     -z "${p#/lib}" -o -z "${p##/lib/*}" -o \
+			     -z "${p#/lib64}" -o -z "${p##/lib64/*}" -o \
+			     -z "${p#/usr/lib}" -o -z "${p##/usr/lib/*}" -o \
+			     -z "${p#/usr/lib64}" -o -z "${p##/usr/lib64/*}" ]; then
+				continue
+			fi
+			if [ -z "${p##/*}" ]; then
+				error_normal RPATH "$f" "RPATH contains illegal absolute entry \"$p\": $rpath"
+			else
+				error_relaxed RPATH "$f" "RPATH contains illegal relative entry \"$p\": $rpath"
+			fi
+			found=1
+		done
+	fi
+
+	local found_p
+
+	for p in $RPM_BUILD_ROOT $RPM_BUILD_DIR $RPM_SOURCE_DIR /lib/../lib64; do
+		found_p="$(printf %s "$rpath" | { grep -F "$p" || [ "$?" -eq 1 ]; } )"
+		if [ -n "$found_p" ]; then
+			error_relaxed RPATH "$f" "RPATH contains illegal entry \"$p\": $rpath"
+			found=1
+		fi
+	done
+
+	for p in /lib /lib64 /usr/lib /usr/lib64; do
+		found_p="$(printf %s " $rpath " | tr : ' ' | { grep -F " $p " || [ "$?" -eq 1 ]; } )"
+		if [ -n "$found_p" ]; then
+			error_normal RPATH "$f" "RPATH contains standard library path \"$p\": $rpath"
+			found=1
+		fi
+	done
+
+	[ -n "$found" ] ||
+		error_strict RPATH "$f" "RPATH entry found: $rpath"
+}
+
+verify_unresolved()
+{
+	local f preload fname rpath ldd_info ldd_rc
+	f="$1"; shift
+	preload="$1"; shift
+	fname="$1"; shift
+	rpath="$1"; shift
+
+	if [ -n "$rpath" ]; then
+		rpath="$rpath $RPM_VERIFY_ELF_LDD_RPATH"
+	else
+		rpath="$RPM_VERIFY_ELF_LDD_RPATH"
+	fi
+	rpath="$(printf %s "$rpath" |
+		tr -s '[:space:]' '\n' |
+		{ grep -v '^$' || [ "$?" -eq 1 ]; } |
+		LANG=C uniq |
+		sed -e "s|^|$RPM_BUILD_ROOT&|" |
+		tr -s '[:space:]' : |
+		sed -e 's/^:\+//; s/:\+$//')"
+
+	if ! ldd_info="$(RPM_LD_PRELOAD="$preload" "$elf_ldd" --undefined -- "$f" "$rpath" 2>&1)"; then
+		printf >&2 '%s\n' "$ldd_info"
+		error_relaxed UNRESOLVED "$f" 'ldd failed'
+		return
+	fi
+
+	case "$VERIFY_ELF_UNRESOLVED" in
+		no|relaxed)
+			ldd_rc=0
+			;;
+		strict)
+			ldd_rc=1
+			;;
+		*)
+			if [ -z "${t##*ELF* executable*dynamically linked*}" ] ||
+			   lookup_path "${fname%/*}" "$RPM_VERIFY_ELF_LDD_RPATH" ||
+			   @RPMCONFIGDIR@/is_elf_so_executable "$f"; then
+				ldd_rc=1
+			else
+				ldd_rc=0
+			fi
+			;;
+	esac
+	printf '%s\n' "$ldd_info" |
+		awk -vrc="$ldd_rc" -vprog="$PROG" -vfname="$f" -- '
+BEGIN {
+        if (rc == "0")
+                prefix="WARNING"
+        else
+                prefix="ERROR"
+        errors=0
+}
+$2 == "=>" && $3 == "not" && $4 == "found" {
+        lib=$1
+        printf ("%s: %s: %s: not found: %s\n", prog, prefix, fname, lib)
+        errors=1
+}
+$1 == "undefined" && $2 == "symbol:" {
+        sym=$3
+        lib=$4
+        sub("^[(]", "", lib)
+        sub("[)]$", "", lib)
+        if (lib == fname) {
+                printf ("%s: %s: %s: undefined symbol: %s\n", prog, prefix, fname, sym)
+                errors=1
+        }
+}
+END {
+        if (rc != "0" && errors != 0)
+                exit 1
+}
+		' >&2 && ldd_rc=0 || ldd_rc=1
+	[ "$ldd_rc" = 0 ] || rc=1
+}
+
+read_elf_segments()
+{
+	local f
+	f="$1"; shift
+
+	[ -n "$elf_segments" ] ||
+	elf_segments="$(readelf --wide --segments -- "$f")" ||
+		error_relaxed ANY "$f" 'readelf failed'
+}
+
+verify_stack()
+{
+	local f
+	f="$1"; shift
+
+	read_elf_segments "$f"
+	[ -n "$elf_segments" ] || return 0
+
+	local sp0 nsp0 sp1 hex stack exe_reg exe_stack
+	sp0='[[:space:]]*'
+	nsp0='[^[:space:]]*'
+	sp1='[[:space:]]\+'
+	hex='0x[0-9a-f]\+'
+	stack="$(printf '%s\n' "$elf_segments" | { grep "^${sp0}GNU_STACK${sp1}" || [ "$?" -eq 1 ]; } )"
+	[ -n "$stack" ] || {
+		error_strict STACK "$f" 'STACK entry not found'
+		return
+	}
+	exe_reg="${sp0}GNU_STACK${sp1}${hex}${sp1}${hex}${sp1}${hex}${sp1}${hex}${sp1}${hex}${sp1}${nsp0}E${nsp0}${sp1}${hex}"
+	exe_stack="$(printf '%s\n' "$stack" | { grep -x "$exe_reg" || [ "$?" -eq 1 ]; } )"
+	[ -z "$exe_stack" ] ||
+	error_strict STACK "$f" "found executable STACK entry: $exe_stack"
+}
+
+LFS_CFLAGS="$(getconf LFS_CFLAGS)"
+non_lfs_funcs='@RPMCONFIGDIR@/verify-elf-non-lfs-funcs.list'
+
+verify_lfs()
+{
+	[ -n "$LFS_CFLAGS" -a -s "$non_lfs_funcs" ] || return 0
+
+	local f funcs
+	f="$1"; shift
+
+	readelf --wide --dynamic "$f" |
+		grep -q '^[[:space:]]*[x0-9a-f]\+[[:space:]]\+(NEEDED)[[:space:]]\+Shared library:[[:space:]]\+\[lib[cz]\.so\..*\]' ||
+			return 0
+
+	funcs="$(readelf --wide --symbols "$f" |
+		sed -n 's/^[[:space:]]*[0-9]\+:[[:space:]]\+[0-9a-f]\+[[:space:]]\+[0-9]\+[[:space:]]\+FUNC[[:space:]]\+[^[:space:]]\+[[:space:]]\+DEFAULT[[:space:]]\+UND[[:space:]]\+\([^@[:space:]]\+\)@.*/\1/p' |
+		sort -u |
+		comm -12 - "$non_lfs_funcs" |
+		tr '\n' ' ')"
+	funcs="${funcs%% }"
+	[ -z "$funcs" ] ||
+		error_normal LFS "$f" "uses non-LFS functions: $funcs"
+}
+
+run_eu()
+{
+	local prog="$1"; shift
+	# Internally, eu-* use $ORIGIN to dlopen their backends.
+	# Pass LD_ORIGIN_PATH to make them work without /proc.
+	LD_ORIGIN_PATH=/usr/bin eu-$prog "$@"
+}
+
+VerifyELF()
+{
+	local f preload t objdump_info fname lint_info textrel
+	f="$1"; shift
+	preload="$1"; shift
+	elf_segments=
+
+	if [ ! -f "$f" ]; then
+		error_strict ANY "$f" 'file not available'
+		return
+	fi
+
+	if ! t=$(file -b "$f"); then
+		error_relaxed ANY "$f" 'file type not available'
+		return
+	fi
+
+	if ! objdump_info=$(objdump -p "$f"); then
+		error_normal ANY "$f" 'objdump failed'
+		return
+	fi
+
+	fname="${f#$RPM_BUILD_ROOT}"
+	fname="${fname#.}"
+
+	if [ "$RPM_TARGET_ARCH" = noarch ]; then
+		error_normal ARCH "$f" "ELF object for \"$RPM_TARGET_ARCH\" architecture"
+	fi
+
+	if [ -z "${fname##/usr/share/*}" -o -z "${fname##/etc/*}" ]; then
+		error_normal FHS "$f" 'ELF object out of allowed directory tree'
+	fi
+
+	if ! lint_info=$(run_eu elflint --gnu-ld "$f" 2>&1); then
+		printf '%s\n' "$lint_info" >&2
+		error_normal LINT "$f" 'eu-elflint failed'
+	fi
+
+	local rpath rpaths
+	rpaths="$(printf %s "$objdump_info" |awk '($1=="RPATH"||$1=="RUNPATH"){print $2}')"
+	while read -r rpath; do
+		verify_rpath "$f" "$rpath"
+		# Two RUNPATH/RPATHs are reported; verify_rpath() always prints at least:
+		# error_strict RPATH "$f" "RPATH entry found: $rpath"
+	done <<<"$rpaths"
+
+	if [ -z "${t##*ELF* executable*}" -o -z "${t##*ELF* shared object*}" ]; then
+		verify_stack "$f"
+	fi
+
+	textrel="$(printf %s "$objdump_info" |sed -ne 's/^[[:space:]]*TEXTREL[[:space:]]\+\([^[:space:]]\+\).*/\1/p')"
+	if [ -n "$textrel" ]; then
+		run_eu findtextrel "$f" 2>&1 |uniq >&2
+		error_normal TEXTREL "$f" "TEXTREL entry found: $textrel"
+	fi
+
+	if [ -z "${t##*ELF* executable*dynamically linked*}" -o -z "${t##*ELF* shared object*}" ]; then
+		rpath="$(printf %s "$objdump_info" |awk '($1=="RUNPATH"){print $2}' |tr -s : ' ' |sed -e "s|\$ORIGIN|${fname%/*}|g")"
+		if [ -z "$rpath" ]; then
+			rpath="$(printf %s "$objdump_info" |awk '($1=="RPATH"){print $2}' |tr -s : ' ' |sed -e "s|\$ORIGIN|${fname%/*}|g")"
+		fi
+		verify_unresolved "$f" "$preload" "$fname" "$rpath"
+		if [ -z "${t##*ELF 32-bit*}" ]; then
+			verify_lfs "$f"
+		fi
+	fi
+}
+
+if [ $# -gt 0 ]; then
+	for f; do
+		VerifyELF "$f" ''
+	done
+else
+	while IFS=$'\t' read -r f preload; do
+		VerifyELF "$f" "$preload"
+	done
+fi
+
+exit $rc

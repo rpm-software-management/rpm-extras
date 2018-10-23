@@ -1,0 +1,161 @@
+#!/bin/sh -ef
+#
+# brp-verify_elf - verify ELF objects.
+#
+# Copyright (C) 2002, 2003, 2006  Dmitry V. Levin <ldv@altlinux.org>
+# Copyright (C) 2009  Alexey Tourbin <at@altlinux.org>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+. @RPMCONFIGDIR@/functions
+ValidateBuildRoot
+
+cd "$RPM_BUILD_ROOT"
+
+export VERIFY_ELF_ARCH=normal
+export VERIFY_ELF_FHS=normal
+export VERIFY_ELF_LFS=relaxed
+export VERIFY_ELF_LINT=relaxed
+export VERIFY_ELF_RPATH=normal
+export VERIFY_ELF_STACK=normal
+export VERIFY_ELF_TEXTREL=normal
+export VERIFY_ELF_UNRESOLVED=normal
+
+for t in `printf %s "$RPM_VERIFY_ELF_METHOD" |tr , ' '`; do
+	case "$t" in
+		no|none|skip)
+			Info 'ELF verification disabled'
+			exit 0
+			;;
+		arch=?*)
+			VERIFY_ELF_ARCH="${t#arch=}"
+			;;
+		fhs=?*)
+			VERIFY_ELF_FHS="${t#fhs=}"
+			;;
+		lfs=?*)
+			VERIFY_ELF_LFS="${t#lfs=}"
+			;;
+		lint=?*)
+			VERIFY_ELF_LINT="${t#lint=}"
+			;;
+		rpath=?*)
+			VERIFY_ELF_RPATH="${t#rpath=}"
+			;;
+		stack=?*)
+			VERIFY_ELF_STACK="${t#stack=}"
+			;;
+		textrel=?*)
+			VERIFY_ELF_TEXTREL="${t#textrel=}"
+			;;
+		unresolved=?*)
+			VERIFY_ELF_UNRESOLVED="${t#unresolved=}"
+			;;
+		default)
+			VERIFY_ELF_ARCH=normal
+			VERIFY_ELF_FHS=normal
+			VERIFY_ELF_LFS=relaxed
+			VERIFY_ELF_LINT=relaxed
+			VERIFY_ELF_RPATH=normal
+			VERIFY_ELF_STACK=normal
+			VERIFY_ELF_TEXTREL=normal
+			VERIFY_ELF_UNRESOLVED=normal
+			;;
+		normal)
+			VERIFY_ELF_ARCH=normal
+			VERIFY_ELF_FHS=normal
+			VERIFY_ELF_LFS=normal
+			VERIFY_ELF_LINT=normal
+			VERIFY_ELF_RPATH=normal
+			VERIFY_ELF_STACK=normal
+			VERIFY_ELF_TEXTREL=normal
+			VERIFY_ELF_UNRESOLVED=normal
+			;;
+		strict)
+			VERIFY_ELF_ARCH=strict
+			VERIFY_ELF_FHS=strict
+			VERIFY_ELF_LFS=strict
+			VERIFY_ELF_LINT=strict
+			VERIFY_ELF_RPATH=strict
+			VERIFY_ELF_STACK=strict
+			VERIFY_ELF_TEXTREL=strict
+			VERIFY_ELF_UNRESOLVED=strict
+			;;
+		relaxed)
+			VERIFY_ELF_ARCH=relaxed
+			VERIFY_ELF_FHS=relaxed
+			VERIFY_ELF_LFS=relaxed
+			VERIFY_ELF_LINT=relaxed
+			VERIFY_ELF_RPATH=relaxed
+			VERIFY_ELF_STACK=relaxed
+			VERIFY_ELF_TEXTREL=relaxed
+			VERIFY_ELF_UNRESOLVED=relaxed
+			;;
+		*)
+			Fatal "Unrecognized verify_elf method: $t"
+			;;
+	esac
+done
+
+# No stack verification available on arm* and mips*
+case "$RPM_TARGET_ARCH" in
+    arm*|mips*)
+	VERIFY_ELF_LINT=no
+	VERIFY_ELF_STACK=no
+        ;;
+esac
+
+: ${RPM_VERIFY_ELF_TOPDIR:=}
+: ${RPM_VERIFY_ELF_SKIPLIST:=}
+[ -d "$RPM_BUILD_ROOT$RPM_VERIFY_ELF_TOPDIR" ] || exit 0
+
+echo "Verifying ELF objects in $RPM_BUILD_ROOT$RPM_VERIFY_ELF_TOPDIR (arch=$VERIFY_ELF_ARCH,fhs=$VERIFY_ELF_FHS,lfs=$VERIFY_ELF_LFS,lint=$VERIFY_ELF_LINT,rpath=$VERIFY_ELF_RPATH,stack=$VERIFY_ELF_STACK,textrel=$VERIFY_ELF_TEXTREL,unresolved=$VERIFY_ELF_UNRESOLVED)"
+
+dump_ld_config='@RPMCONFIGDIR@/dump_ld_config'
+RPM_VERIFY_ELF_LDD_RPATH="$("$dump_ld_config" '' "$RPM_BUILD_ROOT")"
+RPM_VERIFY_ELF_LDD_RPATH="$RPM_VERIFY_ELF_LDD_RPATH /$RPM_LIB $RPM_LIBDIR $("$dump_ld_config")"
+export RPM_VERIFY_ELF_LDD_RPATH
+
+# just in case
+set -o pipefail
+
+find .$RPM_VERIFY_ELF_TOPDIR -path ./usr/lib/debug -prune -o -type f -print |
+file -NF$'\t' -f - |
+while IFS=$'\t' read -r f t; do
+	case " $t" in
+		*' ELF '*' shared object, no machine, '*) continue ;;
+		*' ELF '*) ;;
+		*) continue ;;
+	esac
+	for skip in $RPM_VERIFY_ELF_SKIPLIST; do
+		case "${f#.}" in
+			$skip) continue 2 ;;
+		esac
+	done
+	VERIFY_ELF_LD_PRELOAD=
+	for rule in ${!RPM_LD_PRELOAD_@}; do
+	    pats="${rule/#RPM/RPM_FILES_TO}"
+	    for pat in ${!pats}; do
+		case "${f#.}" in
+		    $pat) VERIFY_ELF_LD_PRELOAD="$VERIFY_ELF_LD_PRELOAD ${!rule}"
+			break
+			;;
+		esac
+	    done
+	done
+	printf '%s\t%s\n' "$f" "$VERIFY_ELF_LD_PRELOAD"
+done |
+@RPMCONFIGDIR@/verify-elf

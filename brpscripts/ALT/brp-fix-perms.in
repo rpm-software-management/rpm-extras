@@ -1,0 +1,43 @@
+#!/bin/sh -e
+#
+# brp-fix-perms - try to fix filesystem permissions.
+#
+# Copyright (C) 2001-2003  Dmitry V. Levin <ldv@altlinux.org>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+. @RPMCONFIGDIR@/functions
+ValidateBuildRoot
+
+cd "$RPM_BUILD_ROOT"
+
+# Following objects should be world readable.
+for d in usr/{share,include} usr/X11R6/{share,include,man}; do
+	[ ! -d "$d" ] || chmod -c -R a+rX "$d"
+done
+
+# Following objects should not be group/world writable.
+for d in usr/*; do
+	[ "$d" = "usr/src" -o -L "$d" -o ! -d "$d" ] ||
+		chmod -c -R u+w,go-w "$d"
+done
+
+# Following files should not be group/world readable.
+find -type f \( -perm -4100 -o -perm -2100 \) -print0 |
+	xargs -r0 chmod -c -R go-rw --
+
+find -type f -perm /a=x -print0 |
+	xargs -r0 @RPMCONFIGDIR@/fixup-libraries
