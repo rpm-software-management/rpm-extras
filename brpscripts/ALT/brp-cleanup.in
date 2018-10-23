@@ -1,0 +1,90 @@
+#!/bin/sh -e
+#
+# brp-cleanup - cleanup buildroot.
+#
+# Copyright (C) 2000-2005  Dmitry V. Levin <ldv@altlinux.org>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+. @RPMCONFIGDIR@/functions
+ValidateBuildRoot
+
+cd "$RPM_BUILD_ROOT"
+
+RPM_CLEANUP_METHOD="${RPM_CLEANUP_METHOD## }"
+RPM_CLEANUP_METHOD="${RPM_CLEANUP_METHOD%% }"
+echo "Cleaning files in $RPM_BUILD_ROOT ($RPM_CLEANUP_METHOD)"
+
+if [ "$RPM_CLEANUP_METHOD" = skip -o "$RPM_CLEANUP_METHOD" = none ]; then
+	exit 0
+fi
+
+: ${RPM_CLEANUP_TOPDIR:=}
+[ -d "$RPM_BUILD_ROOT$RPM_CLEANUP_TOPDIR" ] || exit 0
+
+: ${RPM_CLEANUP_SKIPLIST:=}
+export RPM_CLEANUP_SKIPLIST
+
+if [ -n "$RPM_CLEANUP_METHOD" -a "$RPM_CLEANUP_METHOD" != auto ]; then
+	exec "$RPM_CLEANUP_METHOD"
+fi
+
+find .$RPM_CLEANUP_TOPDIR -type f \(	\
+	-name '#*#'	\
+	-o -name '*~'	\
+	-o -name DEADJOE	\
+	-o -name '*.orig'	\
+	-o -name '*.rej'	\
+	-o -name '*.bak'	\
+	-o -name '.*.orig'	\
+	-o -name '.*.rej'	\
+	-o -name '.*.bak'	\
+	-o -name .SUMS	\
+	-o -name TAGS	\
+	-o -name core	\
+	-o -name .cvsignore	\
+	-o -name .gitignore	\
+	-o \( -path '*/.deps/*' -a -name '*.P' \)	\
+	\) -print0 |
+		xargs -r0 rm -vf --
+
+find .$RPM_CLEANUP_TOPDIR -type d -name CVS -print0 |
+	xargs -r0 rm -vrf --
+
+if [ -z "$RPM_KEEP_LIBTOOL_FILES" ]; then
+	for d in ./lib ./usr/lib ./usr/X11R6/lib ./lib64 ./usr/lib64 ./usr/X11R6/lib64; do
+		[ -d "$d" ] || continue
+		find "$d" -mindepth 1 -maxdepth 1 -type f -name 'lib*.la' -print0 |
+			xargs -r0 rm -fv --
+	done
+fi
+
+if [ -d ./etc/pam.d ]; then
+	find ./etc/pam.d -mindepth 1 -maxdepth 1 -type f -print0 |
+		xargs -r0 sed -i '
+s,^[[:space:]]*\(#\?\)[[:space:]]*\(-\?auth\|account\|session\)[[:space:]]\+,\1\2		,
+s,^[[:space:]]*\(#\?\)[[:space:]]*\(-account\|-session\|-\?password\)[[:space:]]\+,\1\2	,
+s,^[[:space:]]*\(#\?[[:space:]]*-\?\(auth\|account\|password\|session\)[[:space:]]\+\)\(include\)[[:space:]]\+,\1\3		,
+s,^[[:space:]]*\(#\?[[:space:]]*-\?\(auth\|account\|password\|session\)[[:space:]]\+\)\(required\|requisite\|sufficient\|optional\|substack\|\[[^]]\+\]\)[[:space:]]\+,\1\3	,
+s,\([[:space:]]\)/lib\(64\)\?/security/\(pam_\),\1\3,g
+s,\([[:space:]]\)required[[:space:]]\+pam_stack.so[[:space:]]\+service=,\1substack	,g
+' --
+fi
+
+# Run ancillary cleanup methods.
+for f in @RPMCONFIGDIR@/*.clean; do
+	"$f"
+done

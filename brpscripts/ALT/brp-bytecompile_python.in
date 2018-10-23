@@ -1,0 +1,36 @@
+#!/bin/sh -e
+#
+# brp-bytecompile_python - compile python modules.
+#
+# Copyright (C) 2000,2003  Dmitry V. Levin <ldv@altlinux.org>
+# Copyright (C) 2009  Alexey Tourbin <at@altlinux.org>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+. @RPMCONFIGDIR@/functions
+ValidateBuildRoot
+
+cd "$RPM_BUILD_ROOT"
+
+if [ -n "$RPM_PYTHON" -a -x "$RPM_PYTHON" ] && [ `find -type f -name \*.py |wc -l` -gt 0 ]; then
+	RPM_PYTHON_COMPILE_EXCLUDE="$RPM_PYTHON_COMPILE_EXCLUDE ${RPM_PYTHON3_COMPILE_INCLUDE-}"
+	RPM_PYTHON_COMPILE_EXCLUDE="${RPM_PYTHON_COMPILE_EXCLUDE%% }"
+
+	echo "Bytecompiling python modules in $PWD using $RPM_PYTHON"
+	$RPM_PYTHON    @RPMCONFIGDIR@/python.compileall.py "--select=$RPM_PYTHON_COMPILE_METHOD" "--exclude=$RPM_PYTHON_COMPILE_EXCLUDE" "--include=$RPM_PYTHON_COMPILE_INCLUDE" "--deep=$RPM_PYTHON_COMPILE_DEEP" ${RPM_PYTHON_COMPILE_SKIP_X:+--skip_x} ${RPM_PYTHON_COMPILE_CLEAN:+--clean} "--prefix=$RPM_BUILD_ROOT"
+	echo "Bytecompiling python modules with optimization in $PWD using $RPM_PYTHON -O"
+	$RPM_PYTHON -O @RPMCONFIGDIR@/python.compileall.py "--select=$RPM_PYTHON_COMPILE_METHOD" "--exclude=$RPM_PYTHON_COMPILE_EXCLUDE" "--include=$RPM_PYTHON_COMPILE_INCLUDE" "--deep=$RPM_PYTHON_COMPILE_DEEP" ${RPM_PYTHON_COMPILE_SKIP_X:+--skip_x} ${RPM_PYTHON_COMPILE_CLEAN:+--clean} "--prefix=$RPM_BUILD_ROOT"
+fi

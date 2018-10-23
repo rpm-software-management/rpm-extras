@@ -1,0 +1,102 @@
+#!/bin/sh -e
+#
+# brp-fixup - Misc fixups.
+#
+# Copyright (C) 2002-2006  Dmitry V. Levin <ldv@altlinux.org>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+. @RPMCONFIGDIR@/functions
+ValidateBuildRoot
+
+cd "$RPM_BUILD_ROOT"
+
+SHOW_METHODS=
+AddShowMethods()
+{
+	if [ -z "$SHOW_METHODS" ]; then
+		SHOW_METHODS="$*"
+	else
+		SHOW_METHODS="$SHOW_METHODS,$*"
+	fi
+}
+
+export FIXUP_BINCONFIG=
+export FIXUP_PKGCONFIG=
+export FIXUP_LIBTOOL=
+export FIXUP_DESKTOP=
+for t in `printf %s "$RPM_FIXUP_METHOD" |tr , ' '`; do
+	case "$t" in
+		no|none|off|false|skip)
+			exit 0
+			;;
+		config|binconfig)
+			FIXUP_BINCONFIG=binconfig
+			AddShowMethods binconfig
+			;;
+		pkgconfig)
+			FIXUP_PKGCONFIG=pkgconfig
+			AddShowMethods pkgconfig
+			;;
+		la|libtool)
+			FIXUP_LIBTOOL=libtool
+			AddShowMethods libtool
+			;;
+		desktop)
+			FIXUP_DESKTOP=desktop
+			AddShowMethods desktop
+			;;
+		*)
+			Fatal "Unrecognized fixup method: $t"
+			;;
+	esac
+done
+
+if [ -z "$FIXUP_BINCONFIG" -a -z "$FIXUP_PKGCONFIG" -a -z "$FIXUP_LIBTOOL" -a -z "$FIXUP_DESKTOP" ]; then
+	# Nothing to do
+	exit 0
+fi
+
+echo "Verifying and fixing files in $RPM_BUILD_ROOT ($SHOW_METHODS)"
+
+: ${RPM_FIXUP_TOPDIR:=}
+[ -d "$RPM_BUILD_ROOT$RPM_FIXUP_TOPDIR" ] || exit 0
+
+if [ -n "$FIXUP_BINCONFIG" -a -d ./usr/bin ]; then
+	find ./usr/bin -maxdepth 1 -type f -name \*-config -print0 |
+		xargs -r0 @RPMCONFIGDIR@/fixup-binconfig
+fi
+
+if [ -n "$FIXUP_PKGCONFIG" ]; then
+	for d in ."$RPM_LIBDIR"/pkgconfig ./usr/share/pkgconfig; do
+		[ -d "$d" ] || continue
+		find "$d" -maxdepth 1 -type f -name \*.pc -print0 |
+			xargs -r0 @RPMCONFIGDIR@/fixup-pkgconfig
+	done
+fi
+
+if [ -n "$FIXUP_LIBTOOL" ]; then
+	find .$RPM_FIXUP_TOPDIR -type f -name \*.la -print0 |
+		xargs -r0 @RPMCONFIGDIR@/fixup-libtool
+fi
+
+if [ -n "$FIXUP_DESKTOP" ]; then
+	for d in ./usr/share/applications ./usr/share/kde/applications ./usr/share/kde4/applications; do
+		[ -d "$d" ] || continue
+		find "$d" -type f -name \*.desktop -print0 |
+			xargs -r0 @RPMCONFIGDIR@/fixup-desktop
+	done
+fi

@@ -1,0 +1,78 @@
+#!/bin/sh -ef
+#
+# fixup-libtool - libtool .la-files fixups.
+#
+# Copyright (C) 2002, 2004  Dmitry V. Levin <ldv@altlinux.org>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+. @RPMCONFIGDIR@/functions
+ValidateBuildRoot
+
+: ${RPM_FIXUP_SKIPLIST:=}
+
+rc=0
+for f in "$@"; do
+	if [ ! -f "$f" ]; then
+		Info "$f: file unavailable"
+		rc=1
+		continue
+	fi
+
+	fname="${f#$RPM_BUILD_ROOT}"
+	fname="${fname#.}"
+
+	if [ -n "$RPM_FIXUP_SKIPLIST" ]; then
+		for skip in $RPM_FIXUP_SKIPLIST; do
+			if [ -z "${fname##$skip}" ]; then
+				continue 2
+			fi
+		done
+	fi
+
+	# fix libdir
+
+	old_val=`sed -ne "s/^libdir='\([^']*\)'\$/\1/pg" "$f" |tail -1`
+	new_val="${fname%/*}"
+
+	if [ "$new_val" != "$old_val" ]; then
+		subst -p "s/^libdir='[^']*'\$/libdir='$(quote_sed_regexp "$new_val")'/g" "$f"
+		echo "${fname#.}: libdir: '$old_val' --> '$new_val'"
+	fi
+	
+	# fix dependency_libs
+
+	old_val=`sed -ne "s/^dependency_libs='\([^']*\)'\$/\1/pg" "$f" |tail -1`
+	new_val="$(printf %s "$old_val" |tr -s /)"
+
+	saved_val=
+	while [ "$new_val" != "$saved_val" ]; do
+		saved_val="$new_val"
+		new_val=`printf %s "$new_val" |sed -e 's,\(^\| \+\)-L/usr\(/local\)\?/'"$RPM_LIB"'\($\| \+\),\1\3,g'`
+		new_val=`printf %s "$new_val" |sed -e 's,\(^\| \+\)-L\('$RPM_BUILD_ROOT'\|'$RPM_BUILD_DIR'\|/usr/lib[^/]*/gcc-lib\)[^ ]*\($\| \+\),\1\3,g'`
+	done
+
+	new_val="$(printf %s "$new_val" |tr -s ' ')"
+	new_val="${new_val## }"
+	new_val="${new_val%% }"
+
+	if [ "$new_val" != "$old_val" ]; then
+		subst -p "s/^dependency_libs='[^']*'\$/dependency_libs='$(quote_sed_regexp "$new_val")'/g" "$f"
+		echo "${fname#.}: dependency_libs: '$old_val' --> '$new_val'"
+	fi
+done
+
+exit $rc

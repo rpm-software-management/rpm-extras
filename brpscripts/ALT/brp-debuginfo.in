@@ -1,0 +1,94 @@
+#!/bin/sh -efu
+#
+# brp-debuginfo - generate /usr/lib/debug and /usr/src/debug contents
+# for debuginfo packages
+#
+# Written by Alexey Tourbin <at@altlinux.org>.  Based on find-debuginfo.sh
+# by Jeff Johnson <jbj@rpm5.org> and Roland McGrath <roland@redhat.com>.
+# License: GPLv2+.
+
+. @RPMCONFIGDIR@/functions
+ValidateBuildRoot
+
+cd "$RPM_BUILD_ROOT"
+
+rm -rf .tmp
+mkdir .tmp
+
+# Strip binaries, create .debug files under /usr/lib/debug and install sources into /usr/src/debug.
+
+: ${RPM_DEBUGINFO_SKIPLIST:=}
+prune_paths="/lib/firmware /usr/lib/debug /usr/share /usr/src $RPM_DEBUGINFO_SKIPLIST"
+prune_tests="$(printf %s "$prune_paths" |
+		tr '[:space:]' '\n' |
+		sort -u |
+		sed -n '/^\// s/.*/ -o -path .&/p')"
+find . '(' -path './.*' $prune_tests ')' -prune -o -type f -print |sort |
+file -NF$'\t' -f - |
+sed -n -e '/ ELF .* shared object, no machine, /d' \
+       -e 's/\t.* ELF .* \(executable\|shared object\), .*, not stripped.*//p' |
+xargs -r --delimiter='\n' stat -c '%h %i %n' >.tmp/flist
+while read -r nlink ino f; do
+	debugf=./usr/lib/debug${f#.}.debug
+	if [ "$nlink" -gt 1 ]; then
+		eval f0="\${f0_$ino-}"
+		if [ -n "$f0" ]; then
+			debugf0=./usr/lib/debug${f0#.}.debug
+			if [ -f "$debugf0" ]; then
+				mkdir -p "${debugf%/*}"
+				ln -nf "$debugf0" "$debugf"
+			fi
+			mkdir -p .debuginfo/src/"${f%/*}"
+			ln -nf .debuginfo/src/"$f0" .debuginfo/src/"$f"
+			continue
+		else
+			eval f0_$ino="\$f"
+		fi
+	fi
+	strip='--strip-all'
+	for pat in ${RPM_BRP_STRIP_DEBUG-}; do
+		if [ -z "${f##.$pat}" ]; then
+			strip='--strip-debug'
+			break
+		fi
+	done
+	for pat in ${RPM_BRP_STRIP_NONE-}; do
+		if [ -z "${f##.$pat}" ]; then
+			strip=
+			break
+		fi
+	done
+	touch -r "$f" .tmp/stamp
+	@RPMCONFIGDIR@/debugedit -b "$RPM_BUILD_DIR" -d /usr/src/debug -l .tmp/src "$f"
+	if [ -n "$strip" ]; then
+		mkdir -p "${debugf%/*}"
+		LD_ORIGIN_PATH=/usr/bin eu-strip $strip --remove-comment -f "$debugf" "$f"
+		touch -r .tmp/stamp "$debugf" "$f"
+		chmod 644 "$debugf"
+	else
+		touch -r .tmp/stamp "$f"
+	fi
+	mkdir -p .debuginfo/src/"${f%/*}"
+	awk 'BEGIN{RS="\0";ORS="\n"}{print}' .tmp/src |LC_ALL=C sort -u |
+	while read -r src; do
+		[ -f "$RPM_BUILD_DIR"/"$src" ] || continue
+		[ -f ./usr/src/debug/"$src" ] ||
+		install -pD -m644 "$RPM_BUILD_DIR"/"$src" ./usr/src/debug/"$src"
+		printf '%s\n' /usr/src/debug/"$src"
+	done >.debuginfo/src/"$f"
+	rm .tmp/src
+done <.tmp/flist
+
+# Make symbolic links that mimic the original tree.
+find . '(' -path './.*' $prune_tests ')' -prune -o -type l -print |sort >.tmp/flist
+while read -r l; do
+	f=$(readlink -vm "$l")
+	f=${f#$RPM_BUILD_ROOT}
+	debugf=./usr/lib/debug$f.debug
+	[ -f "$debugf" ] || continue
+	debugl=./usr/lib/debug${l#.}.debug
+	mkdir -p "${debugl%/*}"
+	ln -snf "$(relative "${debugf#.}" "${debugl#.}")" "$debugl"
+	mkdir -p .debuginfo/links/"${debugf%/*}"
+	printf '%s\n' "${debugl#.}" >>.debuginfo/links/"$debugf"
+done <.tmp/flist

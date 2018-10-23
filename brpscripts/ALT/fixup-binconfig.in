@@ -1,0 +1,167 @@
+#!/bin/sh -ef
+#
+# fixup-binconfig - /usr/bin/*-config fixups.
+#
+# Copyright (C) 2002,2004,2006,2008  Dmitry V. Levin <ldv@altlinux.org>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+. @RPMCONFIGDIR@/functions
+ValidateBuildRoot
+
+. @RPMCONFIGDIR@/tmpdir.sh
+TMPFILE="$tmpdir/tmp"
+f_saved="$tmpdir/sav"
+f_new="$tmpdir/new"
+
+: ${RPM_FIXUP_SKIPLIST:=}
+
+fix()
+{
+	# fetch parameters
+
+	local includedir=
+	local libdir=
+	local prefix=
+	local exec_prefix=
+	sed -ne "s/^\(\([a-z_A-Z]*\)\(prefix\|dir\|path\)\)=\(.*\)\$/local \1=\4/pg" "$f" >"$TMPFILE" || return 1
+
+	# source parameters
+
+	[ ! -s "$TMPFILE" ] || . "$TMPFILE" || return 1
+
+	prefix="$(printf %s "$prefix" |tr -s /)"
+	exec_prefix="$(printf %s "$exec_prefix" |tr -s /)"
+	includedir="$(printf %s "$includedir" |tr -s /)"
+	libdir="$(printf %s "$libdir" |tr -s /)"
+
+	# fix cflags
+
+	cat "$f" >"$f_new" &&
+	>"$f_saved" ||
+	return 1
+	while ! cmp -s "$f_new" "$f_saved"; do
+		cat "$f_new" >"$f_saved" &&
+		subst '/if test /n;s,\(^\|[="'\'']\| \+\)-I/usr\(/local\)\?/include\($\|["'\'']\| \+\),\1\3,g' -- "$f_new" ||
+		return 1
+	done
+
+	if [ "$includedir" = /usr/include ]; then
+		>"$f_saved" || return 1
+		while ! cmp -s "$f_new" "$f_saved"; do
+			cat "$f_new" >"$f_saved" &&
+			subst '/if test /n;s,\(^\|[="'\'']\| \+\)-I\${includedir}\($\|["'\'']\| \+\),\1\2,g' -- "$f_new" ||
+			return 1
+		done
+	fi
+
+	if [ "$exec_prefix" = /usr ]; then
+		>"$f_saved" || return 1
+		while ! cmp -s "$f_new" "$f_saved"; do
+			cat "$f_new" >"$f_saved" &&
+			subst '/if test /n;s,\(^\|[="'\'']\| \+\)-I\${exec_prefix}/include\($\|["'\'']\| \+\),\1\2,g' -- "$f_new" ||
+			return 1
+		done
+	fi
+
+	if [ "$prefix" = /usr ]; then
+		>"$f_saved" || return 1
+		while ! cmp -s "$f_new" "$f_saved"; do
+			cat "$f_new" >"$f_saved" &&
+			subst '/if test /n;s,\(^\|[="'\'']\| \+\)-I\${prefix}/include\($\|["'\'']\| \+\),\1\2,g' -- "$f_new" ||
+			return 1
+		done
+	fi
+
+	if ! cmp -s "$f_new" "$f"; then
+		echo "$fname:"
+		diff "$f" "$f_new" ||:
+		cat "$f_new" >"$f" || return 1
+	fi
+
+	# fix libs
+
+	cat "$f" >"$f_new" &&
+	>"$f_saved" ||
+	return 1
+	while ! cmp -s "$f_new" "$f_saved"; do
+		cat "$f_new" >"$f_saved" &&
+		subst '/if test /n;s@\(^\|[="'\'']\| \+\)\(-L\|-Wl,-rpath,\)/usr\(/local\)\?/'"$RPM_LIB"'\($\|["'\'']\| \+\)@\1\4@g' -- "$f_new" &&
+		subst '/if test /n;s@\(^\|[="'\'']\| \+\)\(-L\|-Wl,-rpath,\)\('$RPM_BUILD_ROOT'\|'$RPM_BUILD_DIR'\|/usr/lib[^/]*/gcc-lib\)["'\'' ]*\($\|["'\'']\| \+\)@\1\4@g' -- "$f_new" ||
+		return 1
+	done
+
+	if [ "$libdir" = "$RPM_LIBDIR" ]; then
+		>"$f_saved" || return 1
+		while ! cmp -s "$f_new" "$f_saved"; do
+			cat "$f_new" >"$f_saved" &&
+			subst '/if test /n;s@\(^\|[="'\'']\| \+\)\(-L\|-Wl,-rpath,\)\${libdir}\($\|["'\'']\| \+\)@\1\3@g' -- "$f_new" ||
+			return 1
+		done
+	fi
+
+	if [ "$exec_prefix" = /usr ]; then
+		>"$f_saved" || return 1
+		while ! cmp -s "$f_new" "$f_saved"; do
+			cat "$f_new" >"$f_saved" &&
+			subst '/if test /n;s@\(^\|[="'\'']\| \+\)\(-L\|-Wl,-rpath,\)\${exec_prefix}/'"$RPM_LIB"'\($\|["'\'']\| \+\)@\1\3@g' -- "$f_new" ||
+			return 1
+		done
+	fi
+
+	if [ "$prefix" = /usr ]; then
+		>"$f_saved"
+		while ! cmp -s "$f_new" "$f_saved"; do
+			cat "$f_new" >"$f_saved" &&
+			subst '/if test /n;s@\(^\|[="'\'']\| \+\)\(-L\|-Wl,-rpath,\)\${prefix}/'"$RPM_LIB"'\($\|["'\'']\| \+\)@\1\3@g' -- "$f_new" ||
+			return 1
+		done
+	fi
+
+	if ! cmp -s "$f_new" "$f"; then
+		echo "$fname:"
+		diff "$f" "$f_new" ||:
+		cat "$f_new" >"$f" || return 1
+	fi
+}
+
+rc=0
+for f in "$@"; do
+	if [ ! -f "$f" ]; then
+		Info "$f: file unavailable"
+		rc=1
+		continue
+	fi
+
+	fname="${f#$RPM_BUILD_ROOT}"
+	fname="${fname#.}"
+
+	if [ -n "$RPM_FIXUP_SKIPLIST" ]; then
+		for skip in $RPM_FIXUP_SKIPLIST; do
+			if [ -z "${fname##$skip}" ]; then
+				continue 2
+			fi
+		done
+	fi
+
+	t="$(file -b "$f")" || continue
+
+	[ -z "${t##Bourne* shell script text*}" ] || continue
+
+	fix
+done
+
+exit $rc

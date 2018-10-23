@@ -1,0 +1,49 @@
+#!/bin/sh -e
+#
+# brp-check_contents - check contents of files in buildroot
+#
+# Copyright (c) 2017 Dmitry V. Levin <ldv@altlinux.org>
+# All rights reserved.
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+. @RPMCONFIGDIR@/functions
+ValidateBuildRoot
+
+cd "$RPM_BUILD_ROOT"
+
+RPM_CHECK_CONTENTS_METHOD="${RPM_CHECK_CONTENTS_METHOD## }"
+RPM_CHECK_CONTENTS_METHOD="${RPM_CHECK_CONTENTS_METHOD%% }"
+: ${RPM_CHECK_CONTENTS_TOPDIR:=}
+
+echo "Checking contents of files in $RPM_BUILD_ROOT/$RPM_CHECK_CONTENTS_TOPDIR ($RPM_CHECK_CONTENTS_METHOD)"
+
+case "$RPM_CHECK_CONTENTS_METHOD" in
+	no|none|skip) exit 0 ;;
+	relaxed) report=Warning ;;
+	*) report=Fatal ;;
+esac
+
+[ -d "$RPM_BUILD_ROOT/$RPM_CHECK_CONTENTS_TOPDIR" ] || exit 0
+
+bogus_re='/var/lib/(cache|lib|lock|log|nis|run|spool|www|yp)/'
+if grep -Ere "$bogus_re" -- "$RPM_BUILD_ROOT/$RPM_CHECK_CONTENTS_TOPDIR"; then
+	$report "Contents of files listed above match pattern $bogus_re"
+fi
+
+# Run ancillary contents checks.
+for f in @RPMCONFIGDIR@/*.check_contents; do
+	[ -f "$f" -a -x "$f" ] || continue
+	"$f"
+done
